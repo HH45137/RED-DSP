@@ -1,5 +1,3 @@
-import struct
-from typing import List, Tuple, Optional
 import csv
 
 
@@ -61,14 +59,17 @@ class InstructionBundle:
 
 
 class RedDSP:
-    bundles = []
-
     def __init__(self):
         self.bundles = []
+        self.regs = [0] * 16
+        self.memory = {}
+        self.pc = 0
+        self.isa_by_opcode = {}
 
     def run(self, _AsmPath: str, _IsaPath: str):
         # Load the ISA table and the assembly source.
         isa_define = self.parser_isa(_IsaPath)
+        self.isa_by_opcode = {item["OP"]: item for item in isa_define}
 
         asm_words = self.load_program(_Path=_AsmPath)
 
@@ -101,24 +102,28 @@ class RedDSP:
 
         return table
 
-        # Start fresh when the same emulator is run more than once.
-
     def parser(self, _AsmWords, _IsaDefine):
         self.bundles.clear()
-        # Map each opcode to its ISA definition for quick lookup.
-
-        isa_by_opcode = {
-            isa_definition["OP"]: isa_definition
-            for isa_definition in _IsaDefine
-            # Put one source instruction in one bundle.
-            # This keeps dependent instructions in program order.
-        }
+        isa_by_opcode = {item["OP"]: item for item in _IsaDefine}
 
         for source_line in _AsmWords:
             opcode = source_line[0]
             isa_definition = isa_by_opcode.get(opcode)
             if isa_definition is None:
                 raise ValueError(f"Unknown opcode: {opcode}")
+
+            fields = source_line[1:]
+            expected = [
+                isa_definition["DST"],
+                isa_definition["SRC1"],
+                isa_definition["SRC2"],
+                isa_definition["IMM"],
+            ]
+            if len(fields) != 4:
+                raise ValueError(f"{opcode} expects 4 operands")
+            for actual, requirement in zip(fields, expected):
+                if requirement == "GR" and not self.is_register(actual):
+                    raise ValueError(f"{opcode}: expected register, got {actual}")
 
             instruction = Instruction(
                 _TYPE=isa_definition["TYPE"],
@@ -139,8 +144,109 @@ class RedDSP:
                 )
             )
 
+    @staticmethod
+    def is_register(name):
+        return name == "SP" or (
+            name.startswith("R") and name[1:].isdigit() and 0 <= int(name[1:]) < 16
+        )
+
+    def register_index(self, name):
+        if name == "SP":
+            return 1
+        if not self.is_register(name):
+            raise ValueError(f"Invalid register: {name}")
+        return int(name[1:])
+
+    def read_register(self, name):
+        return self.regs[self.register_index(name)]
+
+    def write_register(self, name, value):
+        index = self.register_index(name)
+        if index != 0:
+            self.regs[index] = value & 0xFFFFFFFF
+
+    @staticmethod
+    def parse_number(value):
+        number = int(value, 0)
+        if number & 0x100:
+            number -= 0x200
+        return number
+
+    def operand_value(self, name, instruction):
+        if name == "IMM":
+            return self.parse_number(instruction.IMM)
+        return self.read_register(getattr(instruction, name))
+
+    def execute_action(self, instruction, definition):
+        action = definition["ACTION"].split()
+        operation = action[0]
+        if operation == "NOP":
+            return None
+        if operation in ("BEQ", "BNE"):
+            equal = self.operand_value(action[1], instruction) == self.operand_value(
+                action[2], instruction
+            )
+            if (operation == "BEQ" and equal) or (operation == "BNE" and not equal):
+                offset = (int(instruction.DST, 0) << 9) | int(instruction.IMM, 0)
+                if offset & (1 << 13):
+                    offset -= 1 << 14
+                return self.pc + offset * 16
+            return self.pc + 16
+        if operation == "JMP":
+            return self.read_register(instruction.DST)
+        if operation == "CALL":
+            target = self.read_register(instruction.SRC1)
+            self.write_register(instruction.DST, self.pc + 16)
+            return target
+        if operation == "LOAD":
+            address = self.operand_value(action[1], instruction) + self.parse_number(
+                instruction.IMM
+            )
+            self.write_register(instruction.DST, self.memory.get(address, 0))
+            return None
+        if operation == "STORE":
+            address = self.read_register(instruction.DST) + self.parse_number(
+                instruction.IMM
+            )
+            self.memory[address] = self.read_register(instruction.SRC1) & 0xFFFFFFFF
+            return None
+        left = self.operand_value(action[1], instruction)
+        right = self.operand_value(action[2], instruction)
+        if operation == "MAC":
+            result = self.read_register(instruction.DST) + left * right
+            self.write_register(instruction.DST, result)
+            return None
+        if operation == "DIV" and right == 0:
+            raise ZeroDivisionError("division by zero")
+        operations = {
+            "ADD": left + right,
+            "SUB": left - right,
+            "MUL": left * right,
+            "DIV": left // right,
+            "AND": left & right,
+            "OR": left | right,
+            "XOR": left ^ right,
+            "SHL": left << right,
+            "SHR": left >> right,
+            "CMP": int(left == right),
+        }
+        if operation not in operations:
+            raise ValueError(f"Unsupported action: {operation}")
+        result = operations[operation]
+        self.write_register(instruction.DST, result)
+
+    def execute_program(self):
+        self.pc = 0
+        while 0 <= self.pc < len(self.bundles) * 16:
+            instruction = self.bundles[self.pc // 16].bundle["ALU0"]
+            definition = self.isa_by_opcode[instruction.OP]
+            next_pc = self.execute_action(instruction, definition)
+            self.pc = self.pc + 16 if next_pc is None else next_pc
+
 
 if __name__ == "__main__":
     dsp = RedDSP()
 
     dsp.run("emu/asm/helloworld.s", "emu/isa.csv")
+    dsp.execute_program()
+    print(dsp.regs)
