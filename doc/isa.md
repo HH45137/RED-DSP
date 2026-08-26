@@ -11,10 +11,10 @@
 
 The total size of the package = PKG_SIZE = 4 * 32-bits = 128-bits = 16-Bytes
 
-|             | ALU0              | ALU1              | MAC                              | LSU                 |
-| ----------- | ----------------- | ----------------- | -------------------------------- | ------------------- |
-| Description | ALU instruction 0 | ALU instruction 1 | Special mathematical instruction | Logical instruction |
-| Size (bits) | 32                | 32                | 32                               | 32                  |
+|             | ALU0              | ALU1              | SFU0                             | LSU0                     |
+| ----------- | ----------------- | ----------------- | -------------------------------- | ------------------------ |
+| Description | ALU instruction 0 | ALU instruction 1 | Special mathematical instruction | Load & Store instruction |
+| Size (bits) | 32                | 32                | 32                               | 32                       |
 
 ### Register
 
@@ -44,7 +44,7 @@ Each instruction is 32-bits in size.
 - The \#* is get address
 - The [*] is get data
 
-#### Basic mathematical calculations
+#### Basic mathematical calculations (ALU)
 
 | ID  | OP          | DST | SRC1 | SRC2 | IMM   | Description       |
 | --- | ----------- | --- | ---- | ---- | ----- | ----------------- |
@@ -57,14 +57,14 @@ Each instruction is 32-bits in size.
 | 7   | MUL.INT.IMM | GR  | GR   | X    | VALUE | DST = SRC1 * IMM  |
 | 8   | DIV.INT.IMM | GR  | GR   | X    | VALUE | DST = SRC1 / IMM  |
 
-#### Special mathematical calculations
+#### Special mathematical calculations (SFU)
 
 | ID  | OP          | DST | SRC1 | SRC2 | IMM   | Description        |
 | --- | ----------- | --- | ---- | ---- | ----- | ------------------ |
 | 1   | MAC.INT     | GR  | GR   | GR   | X     | DST += SRC1 * SRC2 |
 | 2   | MAC.INT.IMM | GR  | GR   | X    | VALUE | DST += SRC1 * IMM  |
 
-#### Logical calculations
+#### Logical calculations (ALU)
 
 | ID  | OP      | DST | SRC1 | SRC2 | IMM   | Description        |
 | --- | ------- | --- | ---- | ---- | ----- | ------------------ |
@@ -81,7 +81,7 @@ Each instruction is 32-bits in size.
 | 11  | SFR.IMM | GR  | GR   | X    | VALUE | DST = SRC1 >> IMM  |
 | 12  | CMP.IMM | GR  | GR   | X    | VALUE | DST = SRC1 == IMM  |
 
-#### Load & Store
+#### Load & Store (LSU)
 - The OFFSET = sign_extend({ IMM })
 
 | ID  | OP  | DST | SRC1 | SRC2 | IMM    | Description           |
@@ -89,7 +89,7 @@ Each instruction is 32-bits in size.
 | 1   | LD  | GR  | GR   | X    | OFFSET | DST = [SRC1 + OFFSET] |
 | 2   | ST  | GR  | GR   | X    | OFFSET | [DST + OFFSET] = SRC1 |
 
-#### Flow control
+#### Flow control (ALU)
 
 The offset for branch instructions is formed by concatenating the 5-bit DST field (as the upper bits) with the 9-bit IMM field (as the lower bits), then sign-extended to 32 bits:
 
