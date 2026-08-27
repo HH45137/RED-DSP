@@ -1,3 +1,4 @@
 *.pyc
 /emu/output
 /.idea
+emu/test*.py
