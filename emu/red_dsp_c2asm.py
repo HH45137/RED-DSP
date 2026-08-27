@@ -46,7 +46,7 @@ def run_command(command: list[str]) -> None:
 
 def load_optimizer(isa_path: Path):
     sys.path.insert(0, str(isa_path.parent))
-    from red_dsp_asm_opti import analyze_assembly
+    from red_dsp_asm_viewer import analyze_assembly
 
     return analyze_assembly
 
