@@ -149,6 +149,8 @@ class RedDSP:
             raise ValueError(f"{opcode} expects 4 operands")
         for actual, requirement in zip(fields, expected):
             if requirement == "GR" and not self.is_register(actual):
+                if opcode == "CALL" and actual.isdigit():
+                    continue
                 raise ValueError(f"{opcode}: expected register, got {actual}")
 
         return Instruction(
@@ -307,7 +309,10 @@ class RedDSP:
             return self.operand_value(action[1], instruction)
         if action_name == "CALL":
             self.write_register(instruction.DST, self.pc + 16)
-            return self.operand_value(action[2], instruction)
+            target = instruction.SRC1
+            if self.is_register(target):
+                return self.read_register(target)
+            return int(target, 0)
         if action_name == "LOAD":
             address = self.operand_value(action[1], instruction) + self.operand_value(
                 action[2], instruction

@@ -82,14 +82,30 @@ METRIC_LABELS = (
     ("instruction_count", "Instructions", "Scheduled non-NOP instructions"),
     ("bundle_count", "Cycles / Bundles", "One VLIW bundle is issued per cycle"),
     ("ipc", "IPC", "Average useful instructions issued per cycle"),
-    ("slot_utilization_pct", "Total slot utilization", "Used slots / all four-slot capacity"),
+    (
+        "slot_utilization_pct",
+        "Total slot utilization",
+        "Used slots / all four-slot capacity",
+    ),
     ("nop_ratio_pct", "Empty slot ratio", "NOP slots / all four-slot capacity"),
     ("alu_utilization_pct", "ALU utilization", "ALU instructions / ALU0+ALU1 capacity"),
     ("sfu_utilization_pct", "SFU utilization", "SFU instructions / SFU0 capacity"),
     ("lsu_utilization_pct", "LSU utilization", "LSU instructions / LSU0 capacity"),
-    ("parallel_cycle_ratio_pct", "Parallel cycle ratio", "Cycles issuing at least two instructions"),
-    ("peak_issue_efficiency_pct", "Peak issue efficiency", "IPC / maximum issue width of four"),
-    ("dependency_density", "Dependency density", "Data dependency edges per instruction"),
+    (
+        "parallel_cycle_ratio_pct",
+        "Parallel cycle ratio",
+        "Cycles issuing at least two instructions",
+    ),
+    (
+        "peak_issue_efficiency_pct",
+        "Peak issue efficiency",
+        "IPC / maximum issue width of four",
+    ),
+    (
+        "dependency_density",
+        "Dependency density",
+        "Data dependency edges per instruction",
+    ),
     ("raw_count", "RAW dependencies", "Read-after-write edges"),
     ("war_count", "WAR dependencies", "Write-after-read edges"),
     ("waw_count", "WAW dependencies", "Write-after-write edges"),
@@ -155,10 +171,17 @@ def parse_assembly(
         if len(operands) != 4:
             raise ValueError(f"Line {line_number}: {opcode} expects 4 operands")
         if opcode in ("BEQ", "BNE") and not is_integer(operands[3]):
-            if not is_register(operands[0]) or not is_register(operands[1]) or operands[2] != "X":
+            if (
+                not is_register(operands[0])
+                or not is_register(operands[1])
+                or operands[2] != "X"
+            ):
                 raise ValueError(
                     f"Line {line_number}: {opcode} expects SRC1 SRC2 X LABEL"
                 )
+        elif opcode == "CALL" and not is_register(operands[1]):
+            # Support CALL R15 function_label X X
+            pass
         else:
             for operand, requirement in zip(
                 operands,
@@ -322,7 +345,9 @@ def schedule_region(
         for index in region_indices:
             if index not in remaining:
                 continue
-            local_preds = predecessors[index] & remaining | predecessors[index] & scheduled
+            local_preds = (
+                predecessors[index] & remaining | predecessors[index] & scheduled
+            )
             if not local_preds.issubset(completed):
                 continue
             slot = available_slot(instructions[index], slots)
@@ -373,7 +398,8 @@ def schedule_instructions(
 
 
 def format_bundles(
-    instructions: list[AssemblyInstruction], bundles: list[dict[str, int | None]],
+    instructions: list[AssemblyInstruction],
+    bundles: list[dict[str, int | None]],
     labels: dict[str, int] | None = None,
 ) -> str:
     labels = labels or {}
@@ -384,7 +410,11 @@ def format_bundles(
         if index is not None
     }
     label_bundles = {
-        label: (instruction_to_bundle[index] if index in instruction_to_bundle else len(bundles))
+        label: (
+            instruction_to_bundle[index]
+            if index in instruction_to_bundle
+            else len(bundles)
+        )
         for label, index in labels.items()
     }
     lines: list[str] = []
@@ -396,17 +426,40 @@ def format_bundles(
                 lines.append("    NOP")
                 continue
             instruction = instructions[index]
-            if instruction.action in ("BEQ", "BNE") and not is_integer(instruction.operands[3]):
+            if instruction.action in ("BEQ", "BNE") and not is_integer(
+                instruction.operands[3]
+            ):
                 target = instruction.operands[3]
                 if target not in label_bundles:
-                    raise ValueError(f"Line {instruction.line_number}: unknown label '{target}'")
+                    raise ValueError(
+                        f"Line {instruction.line_number}: unknown label '{target}'"
+                    )
                 offset = label_bundles[target] - instruction_to_bundle[index]
                 if not -(1 << 13) <= offset < (1 << 13):
-                    raise ValueError(f"Line {instruction.line_number}: branch offset is out of signed 14-bit range")
+                    raise ValueError(
+                        f"Line {instruction.line_number}: branch offset is out of signed 14-bit range"
+                    )
                 encoded = offset & 0x3FFF
                 dst = encoded >> 9
                 imm = encoded & 0x1FF
-                lines.append(f"    {instruction.opcode} {dst} {instruction.operands[0]} {instruction.operands[1]} {imm}")
+                lines.append(
+                    f"    {instruction.opcode} {dst} {instruction.operands[0]} {instruction.operands[1]} {imm}"
+                )
+            elif instruction.opcode == "CALL" and not is_register(
+                instruction.operands[1]
+            ):
+                target = instruction.operands[1]
+                if is_integer(target):
+                    target_pc = int(target, 0)
+                elif target not in label_bundles:
+                    raise ValueError(
+                        f"Line {instruction.line_number}: unknown label '{target}'"
+                    )
+                else:
+                    target_pc = label_bundles[target] * 16
+                lines.append(
+                    f"    CALL {instruction.operands[0]} {target_pc} {instruction.operands[2]} {instruction.operands[3]}"
+                )
             else:
                 lines.append(f"    {instruction.label()}")
         lines.append("}")
@@ -424,8 +477,7 @@ def calculate_metrics(
     bundle_count = len(bundles)
     total_capacity = bundle_count * len(SLOT_ORDER)
     slot_counts = {
-        slot: sum(bundle[slot] is not None for bundle in bundles)
-        for slot in SLOT_ORDER
+        slot: sum(bundle[slot] is not None for bundle in bundles) for slot in SLOT_ORDER
     }
     alu_count = slot_counts["ALU0"] + slot_counts["ALU1"]
     sfu_count = slot_counts["SFU0"]
@@ -466,9 +518,9 @@ def calculate_metrics(
         "full_cycle_count": full_cycles,
         "full_cycle_ratio_pct": percentage(full_cycles, bundle_count),
         "peak_issue_efficiency_pct": round(ipc * 25.0, 2),
-        "dependency_density": round(len(edges) / instruction_count, 3)
-        if instruction_count
-        else 0.0,
+        "dependency_density": (
+            round(len(edges) / instruction_count, 3) if instruction_count else 0.0
+        ),
         "raw_count": dependency_counts["RAW"],
         "war_count": dependency_counts["WAR"],
         "waw_count": dependency_counts["WAW"],
@@ -559,16 +611,16 @@ def format_execution_result(result: ExecutionResult) -> str:
 
 
 class ScheduleCanvas(ttk.Frame):
-    NODE_WIDTH = 210
-    NODE_HEIGHT = 48
-    COLUMN_GAP = 28
-    ROW_GAP = 88
-    LEFT_MARGIN = 88
-    TOP_MARGIN = 56
+    NODE_WIDTH = 220
+    NODE_HEIGHT = 50
+    COLUMN_GAP = 24
+    ROW_GAP = 70
+    LEFT_MARGIN = 80
+    TOP_MARGIN = 50
 
     def __init__(self, parent: tk.Widget):
         super().__init__(parent)
-        self.canvas = tk.Canvas(self, background="#f6f8fa", highlightthickness=0)
+        self.canvas = tk.Canvas(self, background="#f8fafc", highlightthickness=0)
         x_scroll = ttk.Scrollbar(self, orient=tk.HORIZONTAL, command=self.canvas.xview)
         y_scroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=x_scroll.set, yscrollcommand=y_scroll.set)
@@ -584,12 +636,12 @@ class ScheduleCanvas(ttk.Frame):
         self.canvas.delete("all")
         if analysis is None or not analysis.bundles:
             self.canvas.create_text(
-                24,
-                24,
+                30,
+                30,
                 anchor="nw",
-                fill="#57606a",
+                fill="#64748b",
                 font=("Segoe UI", 11),
-                text="Optimize assembly to show instruction dependencies and slot usage.",
+                text="Load assembly code to inspect VLIW cycle schedules, slots, and dependencies.",
             )
             self.canvas.configure(scrollregion=(0, 0, 640, 240))
             return
@@ -616,57 +668,77 @@ class ScheduleCanvas(ttk.Frame):
         return positions
 
     def _draw_grid(self, analysis: ScheduleAnalysis) -> None:
-        width = self.LEFT_MARGIN + len(SLOT_ORDER) * (
-            self.NODE_WIDTH + self.COLUMN_GAP
-        )
+        width = self.LEFT_MARGIN + len(SLOT_ORDER) * (self.NODE_WIDTH + self.COLUMN_GAP)
         height = self.TOP_MARGIN + len(analysis.bundles) * (
             self.NODE_HEIGHT + self.ROW_GAP
         )
         for column, slot in enumerate(SLOT_ORDER):
             x = self.LEFT_MARGIN + column * (self.NODE_WIDTH + self.COLUMN_GAP)
+            # Column headers with pill badge
+            self.canvas.create_rectangle(
+                x,
+                12,
+                x + self.NODE_WIDTH,
+                38,
+                fill="#ffffff",
+                outline=SLOT_COLORS[slot],
+                width=1.5,
+            )
             self.canvas.create_text(
                 x + self.NODE_WIDTH / 2,
-                18,
+                25,
                 text=slot,
                 fill=SLOT_COLORS[slot],
                 font=("Segoe UI Semibold", 11),
             )
+            # Column vertical guide
             self.canvas.create_rectangle(
-                x - 8,
-                self.TOP_MARGIN - 18,
-                x + self.NODE_WIDTH + 8,
-                height - 20,
-                outline="#d0d7de",
-                dash=(3, 3),
+                x - 4,
+                self.TOP_MARGIN - 8,
+                x + self.NODE_WIDTH + 4,
+                height - 10,
+                outline="#e2e8f0",
+                dash=(4, 4),
             )
+
         for cycle in range(len(analysis.bundles)):
             y = self.TOP_MARGIN + cycle * (self.NODE_HEIGHT + self.ROW_GAP)
+            # Cycle indicator badge
+            self.canvas.create_rectangle(
+                12,
+                y + 8,
+                64,
+                y + self.NODE_HEIGHT - 8,
+                fill="#f1f5f9",
+                outline="#cbd5e1",
+                width=1,
+            )
             self.canvas.create_text(
-                16,
+                38,
                 y + self.NODE_HEIGHT / 2,
-                anchor="w",
-                text=f"C{cycle}",
-                fill="#57606a",
-                font=("Segoe UI Semibold", 10),
+                text=f"C{cycle:02d}",
+                fill="#475569",
+                font=("Consolas", 10, "bold"),
             )
             for column, slot in enumerate(SLOT_ORDER):
                 x = self.LEFT_MARGIN + column * (self.NODE_WIDTH + self.COLUMN_GAP)
                 if analysis.bundles[cycle][slot] is not None:
                     continue
+                # Empty / NOP slot
                 self.canvas.create_rectangle(
                     x,
                     y,
                     x + self.NODE_WIDTH,
                     y + self.NODE_HEIGHT,
-                    outline="#d0d7de",
-                    dash=(4, 3),
+                    outline="#e2e8f0",
+                    dash=(3, 3),
                     fill="#ffffff",
                 )
                 self.canvas.create_text(
                     x + self.NODE_WIDTH / 2,
                     y + self.NODE_HEIGHT / 2,
-                    text="NOP",
-                    fill="#8c959f",
+                    text="· NOP ·",
+                    fill="#94a3b8",
                     font=("Consolas", 10),
                 )
         self.canvas.create_rectangle(0, 0, width, height, outline="")
@@ -676,7 +748,7 @@ class ScheduleCanvas(ttk.Frame):
         analysis: ScheduleAnalysis,
         positions: dict[int, tuple[int, int, int, int]],
     ) -> None:
-        offsets = {"RAW": -10, "WAR": 0, "WAW": 10}
+        offsets = {"RAW": -12, "WAR": 0, "WAW": 12}
         for edge in analysis.edges:
             if edge.source not in positions or edge.target not in positions:
                 continue
@@ -695,22 +767,22 @@ class ScheduleCanvas(ttk.Frame):
                 start[0],
                 start[1],
                 start[0],
-                start[1] + 18,
+                start[1] + 16,
                 end[0],
-                end[1] - 18,
+                end[1] - 16,
                 end[0],
                 end[1],
                 fill=color,
-                width=2,
+                width=1.5,
                 arrow=tk.LAST,
                 smooth=True,
-            ) # type: ignore
+            )
             self.canvas.create_text(
-                (start[0] + end[0]) / 2 + 18,
+                (start[0] + end[0]) / 2 + 16,
                 (start[1] + end[1]) / 2,
-                text=f"{edge.kind} {edge.register}",
+                text=f"{edge.kind}:{edge.register}",
                 fill=color,
-                font=("Segoe UI", 8),
+                font=("Segoe UI Semibold", 8),
             )
 
     def _draw_nodes(
@@ -722,24 +794,40 @@ class ScheduleCanvas(ttk.Frame):
             instruction = analysis.instructions[index]
             slot = self._slot_of(analysis, index)
             color = SLOT_COLORS[slot]
+            # Modern card container with subtle shadow effect
             self.canvas.create_rectangle(
-                *box, fill="#ffffff", outline=color, width=2
+                box[0] + 1,
+                box[1] + 1,
+                box[2] + 1,
+                box[3] + 1,
+                fill="#e2e8f0",
+                outline="",
+            )
+            self.canvas.create_rectangle(*box, fill="#ffffff", outline=color, width=2)
+            # Slot header tag inside card
+            self.canvas.create_rectangle(
+                box[0] + 2,
+                box[1] + 2,
+                box[2] - 2,
+                box[1] + 18,
+                fill="#f8fafc",
+                outline="",
             )
             self.canvas.create_text(
-                box[0] + 10,
-                box[1] + 12,
+                box[0] + 8,
+                box[1] + 10,
                 anchor="w",
-                text=f"I{index}  L{instruction.line_number}  {slot}",
+                text=f"I{index:02d}  L{instruction.line_number}  [{slot}]",
                 fill=color,
-                font=("Segoe UI", 8),
+                font=("Segoe UI Semibold", 8),
             )
             self.canvas.create_text(
-                box[0] + 10,
+                box[0] + 8,
                 box[1] + 32,
                 anchor="w",
                 text=instruction.label(),
-                fill="#1f2328",
-                font=("Consolas", 9),
+                fill="#0f172a",
+                font=("Consolas", 9, "bold"),
             )
 
     def _draw_legend(self) -> None:
@@ -750,16 +838,23 @@ class ScheduleCanvas(ttk.Frame):
             y,
             anchor="w",
             text="Dependencies:",
-            fill="#57606a",
+            fill="#475569",
             font=("Segoe UI Semibold", 9),
         )
         x += 96
         for kind, color in DEPENDENCY_COLORS.items():
-            self.canvas.create_line(x, y, x + 28, y, fill=color, width=3, arrow=tk.LAST)
-            self.canvas.create_text(
-                x + 36, y, anchor="w", text=kind, fill=color, font=("Segoe UI", 9)
+            self.canvas.create_line(
+                x, y, x + 24, y, fill=color, width=2.5, arrow=tk.LAST
             )
-            x += 78
+            self.canvas.create_text(
+                x + 32,
+                y,
+                anchor="w",
+                text=kind,
+                fill=color,
+                font=("Segoe UI Semibold", 9),
+            )
+            x += 76
 
     @staticmethod
     def _slot_of(analysis: ScheduleAnalysis, index: int) -> str:
@@ -783,41 +878,36 @@ class OptimizerApp(ttk.Frame):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(toolbar, text="Load", command=self.load_source).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Optimize", command=self.optimize).pack(
+        ttk.Button(toolbar, text="Run Assembly", command=self.run_assembly).pack(
             side=tk.LEFT, padx=6
-        )
-        ttk.Button(toolbar, text="Run Optimized", command=self.run_optimized).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="Save Result", command=self.save_result).pack(
-            side=tk.LEFT
         )
         self.status = tk.StringVar(value="Ready")
         ttk.Label(toolbar, textvariable=self.status).pack(side=tk.RIGHT)
 
         panes = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         panes.pack(fill=tk.BOTH, expand=True)
-        editors = ttk.PanedWindow(panes, orient=tk.VERTICAL)
-        self.input_text = self._create_editor(editors, "Input Assembly")
-        self.output_text = self._create_editor(editors, "Optimized Assembly")
-        panes.add(editors, weight=1)
 
-        graph_frame = ttk.LabelFrame(panes, text="Dependency Graph / Slot Usage", padding=6)
+        editor_frame = ttk.LabelFrame(panes, text="Assembly Source (.s)", padding=6)
+        self.assembly_text = tk.Text(
+            editor_frame, wrap=tk.NONE, undo=True, font=("Consolas", 10)
+        )
+        scrollbar = ttk.Scrollbar(
+            editor_frame, orient=tk.VERTICAL, command=self.assembly_text.yview
+        )
+        self.assembly_text.configure(yscrollcommand=scrollbar.set)
+        self.assembly_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        panes.add(editor_frame, weight=1)
+
+        graph_frame = ttk.LabelFrame(
+            panes, text="VLIW Bundle & Cycle Schedule View", padding=6
+        )
         self.graph = ScheduleCanvas(graph_frame)
         self.graph.pack(fill=tk.BOTH, expand=True)
         panes.add(graph_frame, weight=2)
         self.graph.render(None)
 
-        diagnostics = ttk.LabelFrame(self, text="Analysis")
-        diagnostics.pack(fill=tk.X, pady=(8, 0))
-        self.diagnostics = tk.StringVar(value="No assembly has been analyzed.")
-        ttk.Label(diagnostics, textvariable=self.diagnostics).pack(
-            anchor=tk.W, padx=8, pady=6
-        )
-
-        regs_frame = ttk.LabelFrame(
-            self, text="Registers (R00 - R15)", padding=6
-        )
+        regs_frame = ttk.LabelFrame(self, text="Registers (R00 - R15)", padding=6)
         regs_frame.pack(fill=tk.X, pady=(8, 0))
         self.reg_labels: list[ttk.Label] = []
         for i in range(16):
@@ -838,9 +928,7 @@ class OptimizerApp(ttk.Frame):
                 width=16,
                 anchor=tk.W,
             )
-            val_lbl.grid(
-                row=row, column=col + 1, padx=(0, 6), pady=2, sticky=tk.W
-            )
+            val_lbl.grid(row=row, column=col + 1, padx=(0, 6), pady=2, sticky=tk.W)
             self.reg_labels.append(val_lbl)
         for col in range(16):
             regs_frame.grid_columnconfigure(col, weight=1)
@@ -866,7 +954,9 @@ class OptimizerApp(ttk.Frame):
         self.metrics_table.pack(side=tk.LEFT, fill=tk.X, expand=True)
         metrics_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        execution_frame = ttk.LabelFrame(self, text="RedDSP Execution Output", padding=6)
+        execution_frame = ttk.LabelFrame(
+            self, text="RedDSP Execution Output", padding=6
+        )
         execution_frame.pack(fill=tk.BOTH, pady=(8, 0))
         self.execution_text = tk.Text(
             execution_frame,
@@ -890,50 +980,14 @@ class OptimizerApp(ttk.Frame):
         execution_x_scroll.grid(row=1, column=0, sticky="ew")
         execution_frame.grid_columnconfigure(0, weight=1)
 
-    def _create_editor(self, panes: ttk.PanedWindow, title: str) -> tk.Text:
-        frame = ttk.LabelFrame(panes, text=title, padding=6)
-        text = tk.Text(frame, wrap=tk.NONE, undo=True, font=("Consolas", 10))
-        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
-        text.configure(yscrollcommand=scrollbar.set)
-        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        panes.add(frame, weight=1)
-        return text
-
-    def load_source(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Load RED DSP assembly",
-            initialdir=str(ROOT_DIR / "asm"),
-            filetypes=(("Assembly", "*.s"), ("Text", "*.txt"), ("All files", "*.*")),
-        )
-        if not path:
-            return
+    def _display_analysis(self, source: str) -> None:
         try:
-            self.input_text.delete("1.0", tk.END)
-            self.input_text.insert("1.0", Path(path).read_text(encoding="utf-8"))
-            self.status.set(f"Loaded {Path(path).name}")
-        except OSError as error:
-            messagebox.showerror("Load failed", str(error), parent=self.root)
-
-    def optimize(self) -> None:
-        try:
-            analysis = analyze_assembly(self.input_text.get("1.0", tk.END))
-        except (OSError, ValueError) as error:
-            self.status.set("Optimization failed")
-            self.diagnostics.set(str(error))
+            analysis = analyze_assembly(source)
+            self.graph.render(analysis)
+            self._show_metrics(analysis.metrics)
+        except Exception:
             self.graph.render(None)
-            messagebox.showerror("Optimization failed", str(error), parent=self.root)
-            return
-        self.output_text.delete("1.0", tk.END)
-        self.output_text.insert("1.0", analysis.assembly)
-        self.graph.render(analysis)
-        self._show_metrics(analysis.metrics)
-        self.status.set("Optimization complete")
-        self.diagnostics.set(
-            f"{analysis.metrics['instruction_count']} instructions scheduled into "
-            f"{analysis.metrics['bundle_count']} VLIW bundles, "
-            f"{analysis.metrics['edge_count']} data dependencies."
-        )
+            self.metrics_table.delete(*self.metrics_table.get_children())
 
     def _show_metrics(self, metrics: dict[str, int | float]) -> None:
         self.metrics_table.delete(*self.metrics_table.get_children())
@@ -949,18 +1003,41 @@ class OptimizerApp(ttk.Frame):
                 "", tk.END, values=(label, display_value, description)
             )
 
-    def run_optimized(self) -> None:
-        assembly = self.output_text.get("1.0", tk.END).strip()
+    def load_source(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Load RED DSP assembly",
+            initialdir=str(ROOT_DIR / "asm"),
+            filetypes=(("Assembly", "*.s"), ("Text", "*.txt"), ("All files", "*.*")),
+        )
+        if not path:
+            return
+        try:
+            content = Path(path).read_text(encoding="utf-8")
+            self.assembly_text.delete("1.0", tk.END)
+            self.assembly_text.insert("1.0", content)
+            self.status.set(f"Loaded {Path(path).name}")
+            self._display_analysis(content)
+        except OSError as error:
+            messagebox.showerror("Load failed", str(error), parent=self.root)
+
+    def run_assembly(self) -> None:
+        assembly = self.assembly_text.get("1.0", tk.END).strip()
         if not assembly:
-            self.optimize()
-            assembly = self.output_text.get("1.0", tk.END).strip()
-            if not assembly:
-                return
-        self.status.set("Running optimized assembly...")
+            messagebox.showwarning(
+                "No code", "Please load or enter assembly code first.", parent=self.root
+            )
+            return
+        self._display_analysis(assembly)
+        self.status.set("Running assembly...")
         self.root.update_idletasks()
         try:
             result = execute_assembly(assembly + "\n")
-        except (OSError, ValueError, ZeroDivisionError) as error:
+        except (
+            OSError,
+            ValueError,
+            ZeroDivisionError,
+            ExecutionLimitExceeded,
+        ) as error:
             self.status.set("Execution failed")
             self._set_execution_output(f"Execution failed:\n{error}\n")
             messagebox.showerror("Execution failed", str(error), parent=self.root)
@@ -980,28 +1057,6 @@ class OptimizerApp(ttk.Frame):
         self.execution_text.insert("1.0", output)
         self.execution_text.configure(state=tk.DISABLED)
         self.execution_text.see("1.0")
-
-    def save_result(self) -> None:
-        content = self.output_text.get("1.0", tk.END).strip()
-        if not content:
-            messagebox.showwarning(
-                "No result", "Optimize assembly before saving.", parent=self.root
-            )
-            return
-        path = filedialog.asksaveasfilename(
-            title="Save optimized assembly",
-            initialdir=str(ROOT_DIR / "asm"),
-            initialfile="optimized.s",
-            defaultextension=".s",
-            filetypes=(("Assembly", "*.s"), ("All files", "*.*")),
-        )
-        if not path:
-            return
-        try:
-            Path(path).write_text(content + "\n", encoding="utf-8")
-            self.status.set(f"Saved {Path(path).name}")
-        except OSError as error:
-            messagebox.showerror("Save failed", str(error), parent=self.root)
 
 
 def main() -> None:
