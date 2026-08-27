@@ -2,3 +2,4 @@
 /emu/output
 /.idea
 emu/test*.py
+/*build*
