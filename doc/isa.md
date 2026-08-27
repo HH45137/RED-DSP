@@ -47,6 +47,8 @@ Each instruction is 32-bits in size.
 - The shift count is `SRC2[4:0]` or `IMM[4:0]`.
 - `SFR` is an arithmetic right shift.
 - `CMP` writes `0` for false and `1` for true.
+- `CBE` performs a signed 32-bit comparison and writes `1` when `SRC1 >= SRC2`,
+  otherwise it writes `0`.
 
 ### Instructions
 

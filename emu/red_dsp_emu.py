@@ -244,6 +244,22 @@ class RedDSP:
             value -= 1 << 32
         return value >> shift
 
+    @staticmethod
+    def signed32(value):
+        value &= 0xFFFFFFFF
+        return value - (1 << 32) if value & 0x80000000 else value
+
+    @staticmethod
+    def signed_divide(left, right):
+        left = RedDSP.signed32(left)
+        right = RedDSP.signed32(right)
+
+        if right == 0:
+            raise ZeroDivisionError("division by zero")
+
+        quotient = abs(left) // abs(right)
+        return -quotient if (left < 0) != (right < 0) else quotient
+
     def operand_value(self, name, instruction):
         if name in ("IMM", "OFFSET"):
             return self.parse_number(instruction.IMM)
@@ -315,7 +331,7 @@ class RedDSP:
             "ADD": lambda: left + right,
             "SUB": lambda: left - right,
             "MUL": lambda: left * right,
-            "DIV": lambda: left // right,
+            "DIV": lambda: self.signed_divide(left, right),
             "MAC": lambda: self.read_register(instruction.DST) + left * right,
             "AND": lambda: left & right,
             "OR": lambda: left | right,
@@ -323,6 +339,7 @@ class RedDSP:
             "SHL": lambda: left << right,
             "SHR": lambda: self.arithmetic_shift_right(left, right),
             "CMP": lambda: int(left == right),
+            "CBE": lambda: int(self.signed32(left) >= self.signed32(right)),
         }
         operation = operations.get(action_name)
         if operation is None:
