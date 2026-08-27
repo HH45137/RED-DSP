@@ -81,68 +81,121 @@ class RedDSP:
             print(f"Bundle {index}: {ops}")
 
     def load_program(self, _Path: str):
-        # Read non-empty assembly lines and remove comments.
+        # Read bundle markers and instructions, then remove comments.
         words = []
         with open(_Path, "r", encoding="utf-8") as f:
             for line in f:
                 if "//" in line:
                     line = line.split("//", 1)[0]
                 parts = line.split()
-                if len(parts) != 0:
+                if parts:
                     words.extend([parts])
         # print(words)
         return words
 
     def parser_isa(self, _IsaPath: str):
         # Load instruction definitions from the CSV file.
-        table = []
         with open(_IsaPath, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            table = list(reader)
-
-        return table
+            return list(csv.DictReader(f))
 
     def parser(self, _AsmWords, _IsaDefine):
         self.bundles.clear()
         isa_by_opcode = {item["OP"]: item for item in _IsaDefine}
+        bundle_lines = None
 
         for source_line in _AsmWords:
-            opcode = source_line[0]
-            isa_definition = isa_by_opcode.get(opcode)
-            if isa_definition is None:
-                raise ValueError(f"Unknown opcode: {opcode}")
+            if source_line == ["{"]:
+                if bundle_lines is not None:
+                    raise ValueError("Nested bundle")
+                bundle_lines = []
+                continue
+            if source_line == ["}"]:
+                if bundle_lines is None:
+                    raise ValueError("Bundle end without bundle start")
+                self.bundles.append(self.create_bundle(bundle_lines, isa_by_opcode))
+                bundle_lines = None
+                continue
+            if bundle_lines is None:
+                raise ValueError("Instruction must be inside a bundle")
+            bundle_lines.append(source_line)
 
-            fields = source_line[1:]
-            expected = [
-                isa_definition["DST"],
-                isa_definition["SRC1"],
-                isa_definition["SRC2"],
-                isa_definition["IMM"],
-            ]
-            if len(fields) != 4:
-                raise ValueError(f"{opcode} expects 4 operands")
-            for actual, requirement in zip(fields, expected):
-                if requirement == "GR" and not self.is_register(actual):
-                    raise ValueError(f"{opcode}: expected register, got {actual}")
+        if bundle_lines is not None:
+            raise ValueError("Bundle end is missing")
 
-            instruction = Instruction(
-                _TYPE=isa_definition["TYPE"],
-                _OP=isa_definition["OP"],
-                _DST=source_line[1] if len(source_line) > 1 else "X",
-                _SRC1=source_line[2] if len(source_line) > 2 else "X",
-                _SRC2=source_line[3] if len(source_line) > 3 else "X",
-                _IMM=source_line[4] if len(source_line) > 4 else "X",
-            )
+    def create_instruction(self, source_line, isa_by_opcode):
+        opcode = source_line[0]
+        isa_definition = isa_by_opcode.get(opcode)
+        if isa_definition is None:
+            raise ValueError(f"Unknown opcode: {opcode}")
 
-            # The real instruction uses ALU0; the other slots are NOPs.
-            self.bundles.append(
-                InstructionBundle(
-                    _Inst0=instruction,
-                    _Inst1=Instruction.nop(),
-                    _Inst2=Instruction.nop(),
-                    _Inst3=Instruction.nop(),
-                )
-            )
+        fields = source_line[1:]
+        expected = [
+            isa_definition["DST"],
+            isa_definition["SRC1"],
+            isa_definition["SRC2"],
+            isa_definition["IMM"],
+        ]
+        if isa_definition["TYPE"] == "FAKE" and not fields:
+            fields = ["X"] * 4
+        if len(fields) != 4:
+            raise ValueError(f"{opcode} expects 4 operands")
+        for actual, requirement in zip(fields, expected):
+            if requirement == "GR" and not self.is_register(actual):
+                raise ValueError(f"{opcode}: expected register, got {actual}")
+
+        return Instruction(
+            _TYPE=isa_definition["TYPE"],
+            _OP=isa_definition["OP"],
+            _DST=fields[0],
+            _SRC1=fields[1],
+            _SRC2=fields[2],
+            _IMM=fields[3],
+        )
+
+    def create_bundle(self, source_lines, isa_by_opcode):
+        if len(source_lines) > 4:
+            raise ValueError("A bundle can contain at most 4 instructions")
+
+        slots = {
+            "ALU0": Instruction.nop(),
+            "ALU1": Instruction.nop(),
+            "SFU0": Instruction.nop(),
+            "LSU0": Instruction.nop(),
+        }
+        control_flow_count = 0
+
+        for source_line in source_lines:
+            instruction = self.create_instruction(source_line, isa_by_opcode)
+            if instruction.OP == "NOP":
+                continue
+            action_name = isa_by_opcode[instruction.OP]["ACTION"].split()[0]
+            if action_name in ("BEQ", "BNE", "JMP", "CALL"):
+                control_flow_count += 1
+            if instruction.TYPE == "ALU" or instruction.OP == "RET":
+                slot = "ALU0" if slots["ALU0"].OP == "NOP" else "ALU1"
+                if slots[slot].OP != "NOP":
+                    raise ValueError("A bundle can contain at most 2 ALU instructions")
+            elif instruction.TYPE == "SFU":
+                slot = "SFU0"
+                if slots[slot].OP != "NOP":
+                    raise ValueError("A bundle can contain at most 1 SFU instruction")
+            elif instruction.TYPE == "LSU":
+                slot = "LSU0"
+                if slots[slot].OP != "NOP":
+                    raise ValueError("A bundle can contain at most 1 LSU instruction")
+            else:
+                raise ValueError(f"Unsupported instruction type: {instruction.TYPE}")
+            slots[slot] = instruction
+
+        if control_flow_count > 1:
+            raise ValueError("A bundle can contain at most 1 control-flow instruction")
+
+        return InstructionBundle(
+            _Inst0=slots["ALU0"],
+            _Inst1=slots["ALU1"],
+            _Inst2=slots["SFU0"],
+            _Inst3=slots["LSU0"],
+        )
 
     @staticmethod
     def is_register(name):
@@ -172,75 +225,105 @@ class RedDSP:
             number -= 0x200
         return number
 
+    @staticmethod
+    def parse_unsigned_number(value):
+        return int(value, 0) & 0x1FF
+
+    @staticmethod
+    def arithmetic_shift_right(value, shift):
+        value &= 0xFFFFFFFF
+        if value & 0x80000000:
+            value -= 1 << 32
+        return value >> shift
+
     def operand_value(self, name, instruction):
-        if name == "IMM":
+        if name in ("IMM", "OFFSET"):
             return self.parse_number(instruction.IMM)
         return self.read_register(getattr(instruction, name))
 
+    def action_operand_value(self, name, instruction, action):
+        if name == "IMM" and action in ("AND", "OR", "XOR"):
+            return self.parse_unsigned_number(instruction.IMM)
+        if name == "IMM" and action in ("SHL", "SHR"):
+            return self.parse_unsigned_number(instruction.IMM) & 0x1F
+        return self.operand_value(name, instruction)
+
+    def branch_offset(self, instruction):
+        offset = (int(instruction.DST, 0) << 9) | int(instruction.IMM, 0)
+        if offset & (1 << 13):
+            offset -= 1 << 14
+        return offset
+
     def execute_action(self, instruction, definition):
         action = definition["ACTION"].split()
-        operation = action[0]
-        if operation == "NOP":
+        action_name = action[0]
+
+        if action_name == "NOP":
             return None
-        if operation in ("BEQ", "BNE"):
-            equal = self.operand_value(action[1], instruction) == self.operand_value(
+        if action_name == "BEQ":
+            taken = self.operand_value(action[1], instruction) == self.operand_value(
                 action[2], instruction
             )
-            if (operation == "BEQ" and equal) or (operation == "BNE" and not equal):
-                offset = (int(instruction.DST, 0) << 9) | int(instruction.IMM, 0)
-                if offset & (1 << 13):
-                    offset -= 1 << 14
-                return self.pc + offset * 16
-            return self.pc + 16
-        if operation == "JMP":
-            return self.read_register(instruction.DST)
-        if operation == "CALL":
-            target = self.read_register(instruction.SRC1)
+            return self.pc + self.branch_offset(instruction) * 16 if taken else None
+        if action_name == "BNE":
+            taken = self.operand_value(action[1], instruction) != self.operand_value(
+                action[2], instruction
+            )
+            return self.pc + self.branch_offset(instruction) * 16 if taken else None
+        if action_name == "JMP":
+            return self.operand_value(action[1], instruction)
+        if action_name == "CALL":
             self.write_register(instruction.DST, self.pc + 16)
-            return target
-        if operation == "LOAD":
-            address = self.operand_value(action[1], instruction) + self.parse_number(
-                instruction.IMM
+            return self.operand_value(action[2], instruction)
+        if action_name == "LOAD":
+            address = self.operand_value(action[1], instruction) + self.operand_value(
+                action[2], instruction
             )
             self.write_register(instruction.DST, self.memory.get(address, 0))
             return None
-        if operation == "STORE":
-            address = self.read_register(instruction.DST) + self.parse_number(
-                instruction.IMM
+        if action_name == "STORE":
+            address = self.operand_value(action[1], instruction) + self.operand_value(
+                action[3], instruction
             )
-            self.memory[address] = self.read_register(instruction.SRC1) & 0xFFFFFFFF
+            self.memory[address] = (
+                self.operand_value(action[2], instruction) & 0xFFFFFFFF
+            )
             return None
-        left = self.operand_value(action[1], instruction)
-        right = self.operand_value(action[2], instruction)
-        if operation == "MAC":
-            result = self.read_register(instruction.DST) + left * right
-            self.write_register(instruction.DST, result)
-            return None
-        if operation == "DIV" and right == 0:
-            raise ZeroDivisionError("division by zero")
+
+        if len(action) != 3:
+            raise ValueError(f"Unsupported action: {' '.join(action)}")
+        left = self.action_operand_value(action[1], instruction, action_name)
+        right = self.action_operand_value(action[2], instruction, action_name)
         operations = {
-            "ADD": left + right,
-            "SUB": left - right,
-            "MUL": left * right,
-            "DIV": left // right,
-            "AND": left & right,
-            "OR": left | right,
-            "XOR": left ^ right,
-            "SHL": left << right,
-            "SHR": left >> right,
-            "CMP": int(left == right),
+            "ADD": lambda: left + right,
+            "SUB": lambda: left - right,
+            "MUL": lambda: left * right,
+            "DIV": lambda: left // right,
+            "MAC": lambda: self.read_register(instruction.DST) + left * right,
+            "AND": lambda: left & right,
+            "OR": lambda: left | right,
+            "XOR": lambda: left ^ right,
+            "SHL": lambda: left << right,
+            "SHR": lambda: self.arithmetic_shift_right(left, right),
+            "CMP": lambda: int(left == right),
         }
-        if operation not in operations:
-            raise ValueError(f"Unsupported action: {operation}")
-        result = operations[operation]
-        self.write_register(instruction.DST, result)
+        operation = operations.get(action_name)
+        if operation is None:
+            raise ValueError(f"Unsupported action: {action_name}")
+        if action_name == "DIV" and right == 0:
+            raise ZeroDivisionError("division by zero")
+        self.write_register(instruction.DST, operation())
 
     def execute_program(self):
         self.pc = 0
         while 0 <= self.pc < len(self.bundles) * 16:
-            instruction = self.bundles[self.pc // 16].bundle["ALU0"]
-            definition = self.isa_by_opcode[instruction.OP]
-            next_pc = self.execute_action(instruction, definition)
+            bundle = self.bundles[self.pc // 16]
+            next_pc = None
+            for instruction in bundle.bundle.values():
+                definition = self.isa_by_opcode[instruction.OP]
+                result = self.execute_action(instruction, definition)
+                if result is not None:
+                    next_pc = result
             self.pc = self.pc + 16 if next_pc is None else next_pc
 
 

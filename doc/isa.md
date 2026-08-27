@@ -19,6 +19,7 @@ The total size of the package = PKG_SIZE = 4 * 32-bits = 128-bits = 16-Bytes
 ### Register
 
 Each register is 32-bits in size, and there are a total of 16 registers.
+The 5-bit register fields must use R0-R15. R16-R31 are reserved.
 
 | Name      | Description                                                                               |
 | --------- | ----------------------------------------------------------------------------------------- |
@@ -26,6 +27,8 @@ Each register is 32-bits in size, and there are a total of 16 registers.
 | R1/SP     | Stack Pointer                                                                             |
 | R2-R15/GR | General Register                                                                          |
 | PC        | Program Counter (Must be aligned at intervals of PKG_SIZE and hidden from the programmer) |
+
+- Writing R0 has no effect. Reading R0 returns zero.
 
 ### Instruction Format
 
@@ -39,66 +42,42 @@ Each instruction is 32-bits in size.
 | SRC2 | 5          | Source 2 register address |
 | IMM  | 9          | Immediate value           |
 
+- `IMM` is a signed 9-bit value for arithmetic, compare, load, and store instructions.
+- `IMM` is zero-extended for logical instructions.
+- The shift count is `SRC2[4:0]` or `IMM[4:0]`.
+- `SFR` is an arithmetic right shift.
+- `CMP` writes `0` for false and `1` for true.
+
 ### Instructions
 
-- The \#* is get address
-- The [*] is get data
+The instruction table is defined in [`../emu/isa.csv`](../emu/isa.csv).
+This CSV file is the single source of truth for instruction fields and descriptions.
 
-#### Basic mathematical calculations (ALU)
+- `ALU` instructions use ALU0 or ALU1.
+- `SFU` instructions use SFU0.
+- `LSU` instructions use LSU0.
+- `FAKE` instructions are assembler aliases.
 
-| ID  | OP          | DST | SRC1 | SRC2 | IMM   | Description       |
-| --- | ----------- | --- | ---- | ---- | ----- | ----------------- |
-| 1   | ADD.INT     | GR  | GR   | GR   | X     | DST = SRC1 + SRC2 |
-| 2   | SUB.INT     | GR  | GR   | GR   | X     | DST = SRC1 - SRC2 |
-| 3   | MUL.INT     | GR  | GR   | GR   | X     | DST = SRC1 * SRC2 |
-| 4   | DIV.INT     | GR  | GR   | GR   | X     | DST = SRC1 / SRC2 |
-| 5   | ADD.INT.IMM | GR  | GR   | X    | VALUE | DST = SRC1 + IMM  |
-| 6   | SUB.INT.IMM | GR  | GR   | X    | VALUE | DST = SRC1 - IMM  |
-| 7   | MUL.INT.IMM | GR  | GR   | X    | VALUE | DST = SRC1 * IMM  |
-| 8   | DIV.INT.IMM | GR  | GR   | X    | VALUE | DST = SRC1 / IMM  |
+#### Load & Store
 
-#### Special mathematical calculations (SFU)
+- `OFFSET = sign_extend(IMM[8:0])`.
+- `LD` and `ST` access one 32-bit word.
+- For `ST`, the `DST` field is the address base. It is not written.
+- Address alignment is 4 bytes.
 
-| ID  | OP          | DST | SRC1 | SRC2 | IMM   | Description        |
-| --- | ----------- | --- | ---- | ---- | ----- | ------------------ |
-| 1   | MAC.INT     | GR  | GR   | GR   | X     | DST += SRC1 * SRC2 |
-| 2   | MAC.INT.IMM | GR  | GR   | X    | VALUE | DST += SRC1 * IMM  |
+#### Flow Control
 
-#### Logical calculations (ALU)
+The branch offset is a signed 14-bit value:
 
-| ID  | OP      | DST | SRC1 | SRC2 | IMM   | Description        |
-| --- | ------- | --- | ---- | ---- | ----- | ------------------ |
-| 1   | AND     | GR  | GR   | GR   | X     | DST = SRC1 & SRC2  |
-| 2   | OR      | GR  | GR   | GR   | X     | DST = SRC1 \| SRC2 |
-| 3   | XOR     | GR  | GR   | GR   | X     | DST = SRC1 ^ SRC2  |
-| 4   | SFL     | GR  | GR   | GR   | X     | DST = SRC1 << SRC2 |
-| 5   | SFR     | GR  | GR   | GR   | X     | DST = SRC1 >> SRC2 |
-| 6   | CMP     | GR  | GR   | GR   | X     | DST = SRC1 == SRC2 |
-| 7   | AND.IMM | GR  | GR   | X    | VALUE | DST = SRC1 & IMM   |
-| 8   | OR.IMM  | GR  | GR   | X    | VALUE | DST = SRC1 \| IMM  |
-| 9   | XOR.IMM | GR  | GR   | X    | VALUE | DST = SRC1 ^ IMM   |
-| 10  | SFL.IMM | GR  | GR   | X    | VALUE | DST = SRC1 << IMM  |
-| 11  | SFR.IMM | GR  | GR   | X    | VALUE | DST = SRC1 >> IMM  |
-| 12  | CMP.IMM | GR  | GR   | X    | VALUE | DST = SRC1 == IMM  |
+- `OFFSET[13:0] = { DST[4:0], IMM[8:0] }`
+- `PC = PC + sign_extend(OFFSET) * PKG_SIZE` when the branch is taken.
+- `JMP` uses the `DST` field as the target register. The field is not written.
+- `CALL` writes the return address to `DST` and uses `SRC1` as the target register.
+- Jump targets must be aligned to `PKG_SIZE`.
 
-#### Load & Store (LSU)
-- The OFFSET = sign_extend({ IMM })
+### Execution Rules
 
-| ID  | OP  | DST | SRC1 | SRC2 | IMM    | Description           |
-| --- | --- | --- | ---- | ---- | ------ | --------------------- |
-| 1   | LD  | GR  | GR   | X    | OFFSET | DST = [SRC1 + OFFSET] |
-| 2   | ST  | GR  | GR   | X    | OFFSET | [DST + OFFSET] = SRC1 |
-
-#### Flow control (ALU)
-
-The offset for branch instructions is formed by concatenating the 5-bit DST field (as the upper bits) with the 9-bit IMM field (as the lower bits), then sign-extended to 32 bits:
-
-- OFFSET = sign_extend( { DST[4:0], IMM[8:0] } )
-- The final branch target is: PC += OFFSET * PKG_SIZE
-
-| ID  | OP   | DST                         | SRC1 | SRC2 | IMM         | Description                                                  |
-| --- | ---- | --------------------------- | ---- | ---- | ----------- | ------------------------------------------------------------ |
-| 1   | BEQ  | OFFSET[13:9]                | GR   | GR   | OFFSET[8:0] | if (SRC1 == SRC2) PC += sign_extend(OFFSET) * PKG_SIZE       |
-| 2   | BNE  | OFFSET[13:9]                | GR   | GR   | OFFSET[8:0] | if (SRC1 != SRC2) PC += sign_extend(OFFSET) * PKG_SIZE       |
-| 3   | JMP  | GR (must align to PKG_SIZE) | X    | X    | X           | PC = DST                                                     |
-| 4   | CALL | GR                          | GR   | X    | X           | DST = PC + PKG_SIZE; PC = SRC1 (SRC1 must align to PKG_SIZE) |
+- Each bundle has ALU0, ALU1, SFU0, and LSU0 slots.
+- The current emulator executes the ALU0 instruction only.
+- Integer results wrap to 32 bits.
+- Division by zero raises an error.
