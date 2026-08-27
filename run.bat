@@ -7,17 +7,17 @@ if "%~1"=="" (
 )
 
 set "infile=%~f1"
-set "outfile=%batdir%%~n1.s"
+set "outfile=%batdir%/temp/%~n1.s"
 
 echo Input file: %infile%
 echo Output assembly: %outfile%
 
 REM Step 1: Generate assembly from C
-python "%batdir%..\emu\gen_asm_form_c.py" "%infile%" -o "%outfile%"
+python "%batdir%\emu\gen_asm_form_c.py" "%infile%" -o "%outfile%"
 if errorlevel 1 exit /b 1
 
 REM Step 2: Run the emulator to see results
-python "%batdir%..\emu\red_dsp_emu.py" "%outfile%" --isa "%batdir%..\emu\isa.csv"
+python "%batdir%\emu\red_dsp_emu.py" "%outfile%" --isa "%batdir%\doc\isa.csv"
 if errorlevel 1 exit /b 1
 
 echo All steps completed successfully.

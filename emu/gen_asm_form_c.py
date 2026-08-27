@@ -9,8 +9,8 @@ import tempfile
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_ISA_PATH = ROOT_DIR / "../emu" / "isa.csv"
-DEFAULT_LLC_PATH = ROOT_DIR / "../llvm-build-reddsp" / "bin" / "llc.exe"
+DEFAULT_ISA_PATH = ROOT_DIR / "../doc" / "isa.csv"
+DEFAULT_LLC_PATH = ROOT_DIR / "../bin" / "llc.exe"
 
 
 def find_clang() -> str:
@@ -23,8 +23,8 @@ def find_clang() -> str:
         return clang
 
     raise FileNotFoundError(
-        "找不到 clang。请设置 REDDSP_CLANG 环境变量，"
-        "或通过 --clang 指定 clang.exe 路径。"
+        "Could not find clang. Set the REDDSP_CLANG environment variable "
+        "or specify the clang.exe path with --clang."
     )
 
 
@@ -33,7 +33,8 @@ def find_llc() -> Path:
     path = Path(configured) if configured else DEFAULT_LLC_PATH
     if not path.is_file():
         raise FileNotFoundError(
-            f"找不到 RED DSP llc：{path}。" "请先构建 LLVM，或通过 --llc 指定路径。"
+            f"Could not find the RED DSP llc: {path}. "
+            "Build LLVM first, or specify the path with --llc."
         )
     return path
 
@@ -65,11 +66,11 @@ def compile_c(
     isa_path = isa_path.resolve()
 
     if not input_path.is_file():
-        raise FileNotFoundError(f"输入文件不存在：{input_path}")
+        raise FileNotFoundError(f"Input file does not exist: {input_path}")
     if input_path.suffix.lower() != ".c":
-        raise ValueError(f"输入文件必须使用 .c 扩展名：{input_path}")
+        raise ValueError(f"Input file must have a .c extension: {input_path}")
     if not isa_path.is_file():
-        raise FileNotFoundError(f"ISA CSV 不存在：{isa_path}")
+        raise FileNotFoundError(f"ISA CSV does not exist: {isa_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     linear_path = output_path.with_suffix(".linear.s")
@@ -113,15 +114,15 @@ def compile_c(
         analysis = analyze_assembly(linear_assembly, isa_path)
         output_path.write_text(analysis.assembly, encoding="utf-8")
 
-        print(f"生成成功：{output_path}")
+        print(f"Generated successfully: {output_path}")
         print(
-            f"指令数：{analysis.metrics['instruction_count']}，"
-            f"Bundle 数：{analysis.metrics['bundle_count']}"
+            f"Instruction count: {analysis.metrics['instruction_count']}, "
+            f"Bundle count: {analysis.metrics['bundle_count']}"
         )
 
         if keep_intermediate:
-            print(f"LLVM IR：{ir_path}")
-            print(f"线性汇编：{linear_path}")
+            print(f"LLVM IR: {ir_path}")
+            print(f"Linear assembly: {linear_path}")
         else:
             linear_path.unlink(missing_ok=True)
     finally:
@@ -131,48 +132,48 @@ def compile_c(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="将 C 文件编译为 RED DSP VLIW 汇编文件"
+        description="Compile a C file into RED DSP VLIW assembly"
     )
-    parser.add_argument("input", type=Path, help="输入的 .c 文件")
+    parser.add_argument("input", type=Path, help="Input .c file")
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        help="输出的 .s 文件，默认与输入文件同名",
+        help="Output .s file, defaults to the input file name",
     )
     parser.add_argument(
         "-O",
         "--optimization",
         choices=("0", "1", "2", "3", "s"),
         default="2",
-        help="Clang 优化级别，默认 -O2",
+        help="Clang optimization level, default -O2",
     )
     parser.add_argument(
         "--clang",
         default=None,
-        help="clang.exe 路径，也可以通过 REDDSP_CLANG 设置",
+        help="clang.exe path; can also be set via REDDSP_CLANG",
     )
     parser.add_argument(
         "--llc",
         type=Path,
         default=None,
-        help="RED DSP llc.exe 路径，也可以通过 REDDSP_LLC 设置",
+        help="RED DSP llc.exe path; can also be set via REDDSP_LLC",
     )
     parser.add_argument(
         "--isa",
         type=Path,
         default=DEFAULT_ISA_PATH,
-        help=f"ISA CSV 路径，默认：{DEFAULT_ISA_PATH}",
+        help=f"ISA CSV path, default: {DEFAULT_ISA_PATH}",
     )
     parser.add_argument(
         "--keep-intermediate",
         action="store_true",
-        help="保留 .ll 和 .linear.s 中间文件",
+        help="Keep the .ll and .linear.s intermediate files",
     )
     parser.add_argument(
         "--ir-output",
         type=Path,
-        help="指定 LLVM IR 输出路径",
+        help="Specify the LLVM IR output path",
     )
     return parser
 
@@ -202,8 +203,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except subprocess.CalledProcessError as error:
-        print(f"命令执行失败，退出码：{error.returncode}", file=sys.stderr)
+        print(f"Command failed, exit code: {error.returncode}", file=sys.stderr)
         raise SystemExit(error.returncode)
     except (FileNotFoundError, OSError, ValueError) as error:
-        print(f"错误：{error}", file=sys.stderr)
+        print(f"Error: {error}", file=sys.stderr)
         raise SystemExit(1)

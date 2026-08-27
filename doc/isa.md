@@ -52,7 +52,7 @@ Each instruction is 32-bits in size.
 
 ### Instructions
 
-The instruction table is defined in [`../emu/isa.csv`](../emu/isa.csv).
+The instruction table is defined in [`isa.csv`](isa.csv).
 This CSV file is the single source of truth for instruction fields and descriptions.
 
 - `ALU` instructions use ALU0 or ALU1.

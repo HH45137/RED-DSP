@@ -393,7 +393,7 @@ def main():
     parser.add_argument("assembly", help="Input RED DSP .s assembly file")
     parser.add_argument(
         "--isa",
-        default="isa.csv",
+        default="../doc/isa.csv",
         help="ISA CSV file (default: isa.csv)",
     )
     parser.add_argument(

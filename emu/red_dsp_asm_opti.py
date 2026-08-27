@@ -17,7 +17,7 @@ except ImportError:
     from red_dsp_emu import ExecutionLimitExceeded, RedDSP
 
 ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_ISA_PATH = ROOT_DIR / "isa.csv"
+DEFAULT_ISA_PATH = ROOT_DIR / "../doc/isa.csv"
 SLOT_ORDER = ("ALU0", "ALU1", "SFU0", "LSU0")
 SLOT_COLORS = {
     "ALU0": "#1f6feb",
@@ -776,7 +776,7 @@ class ScheduleCanvas(ttk.Frame):
                 width=1.5,
                 arrow=tk.LAST,
                 smooth=True,
-            )
+            ) # type: ignore
             self.canvas.create_text(
                 (start[0] + end[0]) / 2 + 16,
                 (start[1] + end[1]) / 2,
@@ -871,7 +871,7 @@ class OptimizerApp(ttk.Frame):
         self.root = root
         self.pack(fill=tk.BOTH, expand=True)
         root.title("RED DSP Assembly Optimizer")
-        root.minsize(1180, 720)
+        root.minsize(2160, 1080)
         self._create_widgets()
 
     def _create_widgets(self) -> None:
@@ -1006,7 +1006,7 @@ class OptimizerApp(ttk.Frame):
     def load_source(self) -> None:
         path = filedialog.askopenfilename(
             title="Load RED DSP assembly",
-            initialdir=str(ROOT_DIR / "asm"),
+            initialdir=str(ROOT_DIR / "../temp"),
             filetypes=(("Assembly", "*.s"), ("Text", "*.txt"), ("All files", "*.*")),
         )
         if not path:

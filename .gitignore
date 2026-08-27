@@ -4,3 +4,9 @@
 emu/test*.py
 /*build*
 /bin/*.s
+/bin/*.exe
+/bin/*.pdb
+/bin/*.dll
+/bin/llvm-lit.cmd
+/bin/llvm-lit.py
+/temp
