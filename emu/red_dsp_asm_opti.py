@@ -815,6 +815,36 @@ class OptimizerApp(ttk.Frame):
             anchor=tk.W, padx=8, pady=6
         )
 
+        regs_frame = ttk.LabelFrame(
+            self, text="Registers (R00 - R15)", padding=6
+        )
+        regs_frame.pack(fill=tk.X, pady=(8, 0))
+        self.reg_labels: list[ttk.Label] = []
+        for i in range(16):
+            row = i // 8
+            col = (i % 8) * 2
+            name_lbl = ttk.Label(
+                regs_frame,
+                text=f"R{i:02d}:",
+                font=("Consolas", 9, "bold"),
+                foreground="#0969da",
+            )
+            name_lbl.grid(row=row, column=col, padx=(6, 2), pady=2, sticky=tk.E)
+            val_lbl = ttk.Label(
+                regs_frame,
+                text="0 (0x00000000)",
+                font=("Consolas", 9),
+                foreground="#1f2328",
+                width=16,
+                anchor=tk.W,
+            )
+            val_lbl.grid(
+                row=row, column=col + 1, padx=(0, 6), pady=2, sticky=tk.W
+            )
+            self.reg_labels.append(val_lbl)
+        for col in range(16):
+            regs_frame.grid_columnconfigure(col, weight=1)
+
         metrics_frame = ttk.LabelFrame(self, text="Efficiency Metrics", padding=6)
         metrics_frame.pack(fill=tk.X, pady=(8, 0))
         self.metrics_table = ttk.Treeview(
@@ -936,7 +966,13 @@ class OptimizerApp(ttk.Frame):
             messagebox.showerror("Execution failed", str(error), parent=self.root)
             return
         self._set_execution_output(format_execution_result(result))
+        self._update_registers(result.registers)
         self.status.set("Execution complete")
+
+    def _update_registers(self, registers: tuple[int, ...] | list[int]) -> None:
+        for i, val in enumerate(registers):
+            if i < len(self.reg_labels):
+                self.reg_labels[i].configure(text=f"{val} (0x{val:08X})")
 
     def _set_execution_output(self, output: str) -> None:
         self.execution_text.configure(state=tk.NORMAL)
