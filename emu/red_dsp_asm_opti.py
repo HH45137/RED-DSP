@@ -12,9 +12,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 try:
-    from .red_dsp_emu import RedDSP
+    from .red_dsp_emu import ExecutionLimitExceeded, RedDSP
 except ImportError:
-    from red_dsp_emu import RedDSP
+    from red_dsp_emu import ExecutionLimitExceeded, RedDSP
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_ISA_PATH = ROOT_DIR / "isa.csv"
@@ -501,7 +501,9 @@ def optimize_assembly(
 
 
 def execute_assembly(
-    assembly: str, isa_path: Path | str = DEFAULT_ISA_PATH
+    assembly: str,
+    isa_path: Path | str = DEFAULT_ISA_PATH,
+    max_bundles: int = 100000,
 ) -> ExecutionResult:
     """Execute bundled assembly with RedDSP and return its final machine state."""
     if not assembly.strip():
@@ -522,7 +524,7 @@ def execute_assembly(
         output = io.StringIO()
         with redirect_stdout(output):
             dsp.run(str(temporary_path), str(Path(isa_path)))
-            dsp.execute_program()
+            dsp.execute_program(max_bundles=max_bundles)
         return ExecutionResult(
             registers=tuple(dsp.regs),
             memory=dict(sorted(dsp.memory.items())),

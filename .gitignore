@@ -3,3 +3,4 @@
 /.idea
 emu/test*.py
 /*build*
+/bin/*.s

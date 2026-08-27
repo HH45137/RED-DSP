@@ -1,4 +1,11 @@
+import argparse
 import csv
+
+EXIT_VALUE = 0x01145CCB
+
+
+class ExecutionLimitExceeded(RuntimeError):
+    """Raised when a program does not terminate within the configured limit."""
 
 
 class Instruction:
@@ -65,6 +72,7 @@ class RedDSP:
         self.memory = {}
         self.pc = 0
         self.isa_by_opcode = {}
+        self.halted = False
 
     def run(self, _AsmPath: str, _IsaPath: str):
         # Load the ISA table and the assembly source.
@@ -260,6 +268,15 @@ class RedDSP:
 
         if action_name == "NOP":
             return None
+        # RET is an assembler alias for JMP, but a top-level function has no
+        # caller. R15 is initialized to zero, so returning from such a
+        # function terminates emulation instead of jumping back to bundle 0.
+        if instruction.OP == "RET":
+            return_address = self.read_register(instruction.DST)
+            if return_address == 0:
+                self.halted = True
+                return None
+            return return_address
         if action_name == "BEQ":
             taken = self.operand_value(action[1], instruction) == self.operand_value(
                 action[2], instruction
@@ -314,9 +331,23 @@ class RedDSP:
             raise ZeroDivisionError("division by zero")
         self.write_register(instruction.DST, operation())
 
-    def execute_program(self):
+    def execute_program(self, max_bundles=100000):
+        """Execute bundles until termination or a control-flow error.
+
+        ``max_bundles`` prevents malformed programs and intentional infinite
+        loops from hanging the emulator forever. A normal top-level RET with
+        R15 == 0 terminates execution.
+        """
         self.pc = 0
+        self.halted = False
+        executed_bundles = 0
         while 0 <= self.pc < len(self.bundles) * 16:
+            if executed_bundles >= max_bundles:
+                raise ExecutionLimitExceeded(
+                    f"execution exceeded {max_bundles} bundles at PC {self.pc}"
+                )
+            if self.pc % 16 != 0:
+                raise ValueError(f"unaligned program counter: {self.pc}")
             bundle = self.bundles[self.pc // 16]
             next_pc = None
             for instruction in bundle.bundle.values():
@@ -324,12 +355,40 @@ class RedDSP:
                 result = self.execute_action(instruction, definition)
                 if result is not None:
                     next_pc = result
+            executed_bundles += 1
+            if self.halted:
+                break
+            if self.regs[2] == EXIT_VALUE:
+                self.halted = True
+                break
             self.pc = self.pc + 16 if next_pc is None else next_pc
 
 
-if __name__ == "__main__":
-    dsp = RedDSP()
+def main():
+    parser = argparse.ArgumentParser(
+        description="Execute a RED DSP VLIW assembly program."
+    )
+    parser.add_argument("assembly", help="Input RED DSP .s assembly file")
+    parser.add_argument(
+        "--isa",
+        default="isa.csv",
+        help="ISA CSV file (default: isa.csv)",
+    )
+    parser.add_argument(
+        "--max-bundles",
+        type=int,
+        default=100000,
+        help="Maximum number of bundles to execute (default: 100000)",
+    )
+    args = parser.parse_args()
 
-    dsp.run("emu/asm/helloworld.s", "emu/isa.csv")
-    dsp.execute_program()
-    print(dsp.regs)
+    dsp = RedDSP()
+    dsp.run(args.assembly, args.isa)
+    dsp.execute_program(max_bundles=args.max_bundles)
+    print(f"Final PC: {dsp.pc} (0x{dsp.pc:08X})")
+    print(f"Registers: {dsp.regs}")
+    print(f"Memory: {dict(sorted(dsp.memory.items()))}")
+
+
+if __name__ == "__main__":
+    main()
