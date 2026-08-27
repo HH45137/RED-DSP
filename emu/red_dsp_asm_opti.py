@@ -67,6 +67,7 @@ class ScheduleAnalysis:
     edges: list[DependencyEdge]
     assembly: str
     metrics: dict[str, int | float]
+    labels: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,14 @@ def is_register(value: str) -> bool:
     )
 
 
+def is_integer(value: str) -> bool:
+    try:
+        int(value, 0)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_assembly(
     source: str, isa: dict[str, dict[str, str]]
 ) -> list[AssemblyInstruction]:
@@ -116,6 +125,10 @@ def parse_assembly(
     for line_number, raw_line in enumerate(source.splitlines(), start=1):
         code = raw_line.split("//", 1)[0].strip()
         if not code:
+            continue
+        if code.startswith(".") or code.startswith("#"):
+            continue
+        if code.endswith(":"):
             continue
         if code == "{":
             bundle_depth += 1
@@ -141,19 +154,25 @@ def parse_assembly(
             operands = ["X", "X", "X", "X"]
         if len(operands) != 4:
             raise ValueError(f"Line {line_number}: {opcode} expects 4 operands")
-        for operand, requirement in zip(
-            operands,
-            (
-                definition["DST"],
-                definition["SRC1"],
-                definition["SRC2"],
-                definition["IMM"],
-            ),
-        ):
-            if requirement == "GR" and not is_register(operand):
+        if opcode in ("BEQ", "BNE") and not is_integer(operands[3]):
+            if not is_register(operands[0]) or not is_register(operands[1]) or operands[2] != "X":
                 raise ValueError(
-                    f"Line {line_number}: {opcode} expects a register, got '{operand}'"
+                    f"Line {line_number}: {opcode} expects SRC1 SRC2 X LABEL"
                 )
+        else:
+            for operand, requirement in zip(
+                operands,
+                (
+                    definition["DST"],
+                    definition["SRC1"],
+                    definition["SRC2"],
+                    definition["IMM"],
+                ),
+            ):
+                if requirement == "GR" and not is_register(operand):
+                    raise ValueError(
+                        f"Line {line_number}: {opcode} expects a register, got '{operand}'"
+                    )
 
         instructions.append(
             AssemblyInstruction(
@@ -170,6 +189,28 @@ def parse_assembly(
     return instructions
 
 
+def collect_labels(
+    source: str, isa: dict[str, dict[str, str]] | None = None
+) -> dict[str, int]:
+    """Map assembly labels to the following linear instruction index."""
+    isa = isa or load_isa()
+    labels: dict[str, int] = {}
+    instruction_index = 0
+    for raw_line in source.splitlines():
+        code = raw_line.split("//", 1)[0].strip()
+        if not code or code in ("{", "}"):
+            continue
+        if code.endswith(":"):
+            labels[code[:-1]] = instruction_index
+            continue
+        if code.startswith("."):
+            continue
+        if code.split()[0] in isa:
+            if code.split()[0] != "NOP":
+                instruction_index += 1
+    return labels
+
+
 def register_accesses(instruction: AssemblyInstruction) -> tuple[set[str], set[str]]:
     """Return read and written registers according to the ISA action semantics."""
     dst, src1, src2, _imm = instruction.operands
@@ -180,7 +221,8 @@ def register_accesses(instruction: AssemblyInstruction) -> tuple[set[str], set[s
     if action == "STORE":
         reads.update(register for register in (dst, src1) if is_register(register))
     elif action in ("BEQ", "BNE"):
-        reads.update(register for register in (src1, src2) if is_register(register))
+        branch_sources = (dst, src1) if not is_integer(_imm) else (src1, src2)
+        reads.update(register for register in branch_sources if is_register(register))
     elif action == "JMP":
         if is_register(dst):
             reads.add(dst)
@@ -301,11 +343,16 @@ def schedule_region(
 def schedule_instructions(
     instructions: list[AssemblyInstruction],
     predecessors: list[set[int]],
+    boundaries: set[int] | None = None,
 ) -> list[dict[str, int | None]]:
     """Schedule code while treating memory and control flow as strict barriers."""
     bundles: list[dict[str, int | None]] = []
     region: list[int] = []
+    boundaries = boundaries or set()
     for index, instruction in enumerate(instructions):
+        if index in boundaries and region:
+            bundles.extend(schedule_region(instructions, region, predecessors))
+            region = []
         if is_barrier(instruction):
             if region:
                 bundles.extend(schedule_region(instructions, region, predecessors))
@@ -326,18 +373,42 @@ def schedule_instructions(
 
 
 def format_bundles(
-    instructions: list[AssemblyInstruction], bundles: list[dict[str, int | None]]
+    instructions: list[AssemblyInstruction], bundles: list[dict[str, int | None]],
+    labels: dict[str, int] | None = None,
 ) -> str:
+    labels = labels or {}
+    instruction_to_bundle = {
+        index: bundle_index
+        for bundle_index, bundle in enumerate(bundles)
+        for index in bundle.values()
+        if index is not None
+    }
+    label_bundles = {
+        label: (instruction_to_bundle[index] if index in instruction_to_bundle else len(bundles))
+        for label, index in labels.items()
+    }
     lines: list[str] = []
     for bundle in bundles:
         lines.append("{")
         for slot in SLOT_ORDER:
             index = bundle[slot]
-            lines.append(
-                "    NOP"
-                if index is None
-                else f"    {instructions[index].label()}"
-            )
+            if index is None:
+                lines.append("    NOP")
+                continue
+            instruction = instructions[index]
+            if instruction.action in ("BEQ", "BNE") and not is_integer(instruction.operands[3]):
+                target = instruction.operands[3]
+                if target not in label_bundles:
+                    raise ValueError(f"Line {instruction.line_number}: unknown label '{target}'")
+                offset = label_bundles[target] - instruction_to_bundle[index]
+                if not -(1 << 13) <= offset < (1 << 13):
+                    raise ValueError(f"Line {instruction.line_number}: branch offset is out of signed 14-bit range")
+                encoded = offset & 0x3FFF
+                dst = encoded >> 9
+                imm = encoded & 0x1FF
+                lines.append(f"    {instruction.opcode} {dst} {instruction.operands[0]} {instruction.operands[1]} {imm}")
+            else:
+                lines.append(f"    {instruction.label()}")
         lines.append("}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -409,14 +480,16 @@ def analyze_assembly(
 ) -> ScheduleAnalysis:
     isa = load_isa(isa_path)
     instructions = parse_assembly(source, isa)
+    labels = collect_labels(source, isa)
     predecessors, edges = build_dependencies(instructions)
-    bundles = schedule_instructions(instructions, predecessors)
+    bundles = schedule_instructions(instructions, predecessors, set(labels.values()))
     return ScheduleAnalysis(
         instructions=instructions,
         bundles=bundles,
         edges=edges,
-        assembly=format_bundles(instructions, bundles),
+        assembly=format_bundles(instructions, bundles, labels),
         metrics=calculate_metrics(instructions, bundles, edges),
+        labels=labels,
     )
 
 
